@@ -29,7 +29,8 @@ class HandleInertiaRequests extends Middleware
      */
     public function share(Request $request): array
     {
-        return array_merge(parent::share($request), [
+        return [
+            ...parent::share($request),
             'auth' => [
                 'user' => $request->user(),
             ],
@@ -38,7 +39,8 @@ class HandleInertiaRequests extends Middleware
                 'message' => fn() => $request->session()->get('message'),
                 'lesson_completed' => fn() => $request->session()->get('lesson_completed'),
                 'module_completed' => fn() => $request->session()->get('module_completed'),
+                'module_summary' => fn() => $request->session()->get('module_summary'), // <--- Critical for the summary modal
             ],
-        ]);
+        ];
     }
 }

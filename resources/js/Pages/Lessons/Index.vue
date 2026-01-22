@@ -1,66 +1,82 @@
 <script setup>
 import AuthenticatedLayout from "@/Layouts/AuthenticatedLayout.vue";
 import { Head, Link, router, usePage } from "@inertiajs/vue3";
-import { ref, onMounted, onUnmounted, watch, computed } from "vue";
+import { ref, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
 import confetti from "canvas-confetti";
+import Swal from "sweetalert2";
 
 const props = defineProps({
     modules: Array,
     activeLesson: Object,
+    savedAnswers: Object,
 });
 
 const page = usePage();
 const showCongratsModal = ref(false);
 const completedModuleTitle = ref("");
+const showSummaryModal = ref(false);
+const summaryData = ref(null);
 
-// --- Celebration & Toast Logic ---
+// --- Toast & Celebration Logic ---
 const showToast = ref(false);
 const toastMessage = ref("");
+const toastType = ref("success");
 
 const motivationalQuotes = [
-    "Great job! Keep the momentum going! 🚀",
-    "You're doing amazing! 🌟",
-    "Another step forward! 👣",
-    "Knowledge power up! ⚡",
-    "Fantastic work! 🌈",
-    "You are unstoppable! 💪",
-    "Lesson crushed! What's next? 📚",
-    "Making progress like a pro! 🏆",
+    "Great job! Keep the momentum going!",
+    "You're doing amazing!",
+    "Another step forward!",
+    "Knowledge power up!",
+    "Fantastic work!",
 ];
 
 watch(
     () => page.props.flash,
     (flash) => {
+        // 1. Lesson Completed
         if (flash.lesson_completed) {
             fireSmallConfetti();
-            triggerToast();
+            triggerToast(
+                "success",
+                motivationalQuotes[
+                    Math.floor(Math.random() * motivationalQuotes.length)
+                ],
+            );
         }
+        // 2. Full Module Completion
         if (flash.module_completed) {
-            completedModuleTitle.value = flash.module_completed;
-            showCongratsModal.value = true;
-            fireBigConfetti();
+            if (isLastLesson.value) {
+                completedModuleTitle.value = flash.module_completed;
+                showCongratsModal.value = true;
+                fireBigConfetti();
+            } else {
+                fireSmallConfetti();
+                triggerToast("success", "Module 100% Completed! Great job.");
+            }
+        }
+        // 3. Module Summary
+        if (flash.module_summary) {
+            summaryData.value = flash.module_summary;
+            showSummaryModal.value = true;
         }
     },
     { deep: true },
 );
 
-const triggerToast = () => {
-    toastMessage.value =
-        motivationalQuotes[
-            Math.floor(Math.random() * motivationalQuotes.length)
-        ];
+const triggerToast = (type, message) => {
+    toastType.value = type;
+    toastMessage.value = message;
     showToast.value = true;
     setTimeout(() => {
         showToast.value = false;
-    }, 3000);
+    }, 4000);
 };
 
 const fireSmallConfetti = () => {
     confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
 };
-
 const fireBigConfetti = () => {
-    var duration = 3 * 1000;
+    var duration = 3000;
     var animationEnd = Date.now() + duration;
     var defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 9999 };
     var interval = setInterval(function () {
@@ -70,21 +86,215 @@ const fireBigConfetti = () => {
         confetti({
             ...defaults,
             particleCount,
-            origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 },
-        });
-        confetti({
-            ...defaults,
-            particleCount,
-            origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 },
+            origin: { x: Math.random(), y: Math.random() - 0.2 },
         });
     }, 250);
 };
 
-function randomInRange(min, max) {
-    return Math.random() * (max - min) + min;
-}
+// --- Computed Properties ---
+const currentModule = computed(() => {
+    if (!props.modules || !props.activeLesson) return null;
+    return props.modules.find((module) =>
+        module.lessons.some((lesson) => lesson.id === props.activeLesson.id),
+    );
+});
 
-// --- Helpers & Computed ---
+const lessonNavigation = computed(() => {
+    if (!props.activeLesson || !currentModule.value)
+        return { prev: null, next: null };
+    const moduleLessons = currentModule.value.lessons;
+    const currentIndex = moduleLessons.findIndex(
+        (l) => l.id === props.activeLesson.id,
+    );
+    return {
+        prev: currentIndex > 0 ? moduleLessons[currentIndex - 1] : null,
+        next:
+            currentIndex < moduleLessons.length - 1
+                ? moduleLessons[currentIndex + 1]
+                : null,
+    };
+});
+
+const isLastLesson = computed(() => {
+    if (!currentModule.value || !props.activeLesson) return false;
+    const lessons = currentModule.value.lessons;
+    return lessons[lessons.length - 1].id === props.activeLesson.id;
+});
+
+const isModuleLocked = computed(() => {
+    return currentModule.value && currentModule.value.progress === 100;
+});
+
+// --- Input Harvesting ---
+const lessonContentRef = ref(null);
+const studentAnswers = ref({});
+const totalInputs = ref(0);
+const isDirty = ref(false);
+
+const initializeInputs = () => {
+    if (!lessonContentRef.value) return;
+
+    const inputs = lessonContentRef.value.querySelectorAll(
+        "input, textarea, select",
+    );
+    totalInputs.value = inputs.length;
+    studentAnswers.value = {};
+    isDirty.value = false;
+
+    inputs.forEach((input, index) => {
+        input.classList.add("transition-all", "duration-300");
+
+        if (isModuleLocked.value) {
+            input.disabled = true;
+            input.classList.add(
+                "opacity-70",
+                "cursor-not-allowed",
+                "bg-slate-100",
+            );
+        } else {
+            input.disabled = false;
+            input.classList.remove(
+                "opacity-70",
+                "cursor-not-allowed",
+                "bg-slate-100",
+            );
+        }
+
+        if (props.savedAnswers && props.savedAnswers[index] !== undefined) {
+            const savedValue = props.savedAnswers[index];
+            input.value = savedValue;
+            studentAnswers.value[index] = savedValue;
+        }
+
+        const updateHandler = (e) => {
+            studentAnswers.value[index] = e.target.value;
+            isDirty.value = true;
+            if (e.target.value.trim() !== "")
+                input.classList.remove("ring-2", "ring-rose-500", "bg-rose-50");
+        };
+        input.addEventListener("input", updateHandler);
+        input.addEventListener("change", updateHandler);
+    });
+};
+
+watch(
+    () => props.activeLesson,
+    async () => {
+        await nextTick();
+        initializeInputs();
+    },
+    { immediate: true },
+);
+
+// --- Actions ---
+const saveAndNavigate = (targetUrl) => {
+    if (isModuleLocked.value) {
+        router.visit(targetUrl);
+        return;
+    }
+    if (isDirty.value) {
+        router.post(
+            route("lessons.complete", props.activeLesson.id),
+            {
+                answers: studentAnswers.value,
+                save_only: true,
+            },
+            {
+                preserveScroll: true,
+                onSuccess: () => router.visit(targetUrl),
+            },
+        );
+    } else {
+        router.visit(targetUrl);
+    }
+};
+
+const performSubmission = () => {
+    router.post(
+        route("lessons.complete", props.activeLesson.id),
+        {
+            answers: studentAnswers.value,
+        },
+        { preserveScroll: true },
+    );
+};
+
+const markAsComplete = () => {
+    if (!props.activeLesson) return;
+    if (isModuleLocked.value) return;
+
+    // 1. Validation
+    if (totalInputs.value > 0) {
+        let missing = false;
+        const inputs = lessonContentRef.value.querySelectorAll(
+            "input, textarea, select",
+        );
+        inputs.forEach((input, index) => {
+            const val = studentAnswers.value[index];
+            if (!val || val.trim() === "") {
+                missing = true;
+                input.classList.add("ring-2", "ring-rose-500", "bg-rose-50");
+                if (!missing)
+                    input.scrollIntoView({
+                        behavior: "smooth",
+                        block: "center",
+                    });
+            }
+        });
+        if (missing) {
+            triggerToast("error", `Please complete all fields.`);
+            return;
+        }
+    }
+
+    // 2. Logic: Handle Confirmation
+    if (isLastLesson.value) {
+        // Check if there are ANY incomplete lessons in the module (excluding current)
+        const hasIncompletePrerequisites = currentModule.value.lessons.some(
+            (l) => l.id !== props.activeLesson.id && !l.is_completed,
+        );
+
+        // If Prerequisites are missing -> DO NOT SHOW CONFIRMATION.
+        // Just submit, so backend can trigger the Summary Modal.
+        if (hasIncompletePrerequisites) {
+            performSubmission();
+            return;
+        }
+
+        // If All Prerequisites are done -> SHOW CONFIRMATION.
+        Swal.fire({
+            title: "Submit Module?",
+            text: "You are about to finish this module. Once submitted, your answers will be locked and cannot be edited.",
+            icon: "question",
+            showCancelButton: true,
+            confirmButtonColor: "#0f172a",
+            cancelButtonColor: "#94a3b8",
+            confirmButtonText: "Yes, Submit!",
+            cancelButtonText: "Not yet",
+            customClass: {
+                popup: "rounded-2xl",
+                confirmButton: "rounded-xl px-6 py-3 font-bold",
+                cancelButton: "rounded-xl px-6 py-3 font-bold",
+            },
+        }).then((result) => {
+            if (result.isConfirmed) {
+                performSubmission();
+            }
+        });
+    } else {
+        // Normal lesson - submit immediately
+        performSubmission();
+    }
+};
+
+// --- Mobile & Helpers ---
+const showMobileMenu = ref(false);
+const toggleMobileMenu = () => (showMobileMenu.value = !showMobileMenu.value);
+const closeMobileMenu = () => (showMobileMenu.value = false);
+watch(showMobileMenu, (val) => {
+    document.body.style.overflow = val ? "hidden" : "";
+});
+
 const getModuleTheme = (index) => {
     const themes = [
         {
@@ -119,56 +329,15 @@ const getModuleTheme = (index) => {
     return themes[index % themes.length];
 };
 
-const currentModule = computed(() => {
-    if (!props.modules || !props.activeLesson) return null;
-    return props.modules.find((module) =>
-        module.lessons.some((lesson) => lesson.id === props.activeLesson.id),
-    );
-});
-
-const lessonNavigation = computed(() => {
-    if (!props.activeLesson || !props.modules)
-        return { prev: null, next: null };
-    const allLessons = props.modules.flatMap((m) => m.lessons);
-    const currentIndex = allLessons.findIndex(
-        (l) => l.id === props.activeLesson.id,
-    );
-    return {
-        prev: currentIndex > 0 ? allLessons[currentIndex - 1] : null,
-        next:
-            currentIndex < allLessons.length - 1
-                ? allLessons[currentIndex + 1]
-                : null,
-    };
-});
-
-const markAsComplete = () => {
-    if (!props.activeLesson) return;
-    router.post(
-        route("lessons.complete", props.activeLesson.id),
-        {},
-        { preserveScroll: true },
-    );
-};
-
-// --- UI Logic ---
-const showMobileMenu = ref(false);
-const toggleMobileMenu = () => (showMobileMenu.value = !showMobileMenu.value);
-const closeMobileMenu = () => (showMobileMenu.value = false);
-watch(showMobileMenu, (val) => {
-    document.body.style.overflow = val ? "hidden" : "";
-});
-
 const scrollPercentage = ref(0);
 const updateScrollProgress = () => {
     if (!props.activeLesson) return;
     const docHeight =
         document.documentElement.scrollHeight -
         document.documentElement.clientHeight;
-    const scrollTop = document.documentElement.scrollTop;
-    scrollPercentage.value = (scrollTop / docHeight) * 100;
+    scrollPercentage.value =
+        (document.documentElement.scrollTop / docHeight) * 100;
 };
-
 onMounted(() => window.addEventListener("scroll", updateScrollProgress));
 onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
 </script>
@@ -237,7 +406,6 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                     getModuleTheme(index).iconBg,
                                 ]"
                             ></div>
-
                             <div
                                 class="flex justify-between items-start relative z-10"
                             >
@@ -316,7 +484,6 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                     >Module {{ index + 1 }}</span
                                 >
                             </div>
-
                             <div class="relative z-10">
                                 <h3
                                     class="text-2xl font-bold text-slate-900 leading-tight group-hover:text-teal-600 transition-colors"
@@ -325,7 +492,6 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                 </h3>
                             </div>
                         </div>
-
                         <div class="p-8 flex-1 flex flex-col">
                             <p
                                 class="text-slate-500 text-sm leading-relaxed mb-8 line-clamp-3"
@@ -511,7 +677,6 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                             <div
                                 class="absolute left-5 top-6 bottom-6 w-0.5 bg-slate-200 -translate-x-1/2 z-0"
                             ></div>
-
                             <div class="space-y-1">
                                 <Link
                                     v-for="(
@@ -545,7 +710,6 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                                 ></path>
                                             </svg>
                                         </div>
-
                                         <div
                                             v-else-if="
                                                 activeLesson.id === lesson.id
@@ -563,7 +727,6 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                                 ></div>
                                             </div>
                                         </div>
-
                                         <div
                                             v-else
                                             class="w-8 h-8 rounded-full border-2 border-slate-200 bg-slate-50 flex items-center justify-center group-hover:border-slate-300 transition-colors"
@@ -573,7 +736,6 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                             ></div>
                                         </div>
                                     </div>
-
                                     <div class="flex-1 pt-2">
                                         <span
                                             :class="[
@@ -699,7 +861,10 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                     <div
                         class="prose prose-slate prose-lg max-w-none text-slate-600 leading-loose flex-1 mb-20"
                     >
-                        <div v-html="activeLesson.content_body"></div>
+                        <div
+                            ref="lessonContentRef"
+                            v-html="activeLesson.content_body"
+                        ></div>
                     </div>
 
                     <div
@@ -709,18 +874,20 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                             class="flex flex-row items-center justify-between gap-4 max-w-3xl mx-auto w-full"
                         >
                             <div class="shrink-0">
-                                <Link
+                                <button
                                     v-if="lessonNavigation.prev"
-                                    :href="
-                                        route('lessons', {
-                                            lesson: lessonNavigation.prev.id,
-                                        })
+                                    @click="
+                                        saveAndNavigate(
+                                            route('lessons', {
+                                                lesson: lessonNavigation.prev
+                                                    .id,
+                                            }),
+                                        )
                                     "
-                                    class="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center rounded-2xl bg-white border border-slate-200 text-slate-400 hover:text-slate-800 hover:border-slate-300 hover:bg-slate-50 transition-all shadow-sm group"
-                                    title="Previous Lesson"
+                                    class="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center rounded-2xl bg-white border border-slate-200 text-slate-400 hover:text-slate-800 hover:border-slate-300 hover:bg-slate-50 transition-all shadow-sm"
                                 >
                                     <svg
-                                        class="w-6 h-6 transform group-hover:-translate-x-1 transition-transform"
+                                        class="w-6 h-6"
                                         fill="none"
                                         stroke="currentColor"
                                         viewBox="0 0 24 24"
@@ -732,28 +899,41 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                             d="M15 19l-7-7 7-7"
                                         ></path>
                                     </svg>
-                                </Link>
+                                </button>
                                 <div
                                     v-else
                                     class="w-12 h-12 md:w-14 md:h-14"
                                 ></div>
                             </div>
+
                             <button
                                 @click="markAsComplete"
-                                :disabled="activeLesson.is_completed"
+                                :disabled="
+                                    isModuleLocked ||
+                                    (activeLesson.is_completed &&
+                                        !isLastLesson &&
+                                        totalInputs === 0)
+                                "
                                 :class="[
                                     'flex-1 max-w-xs px-4 md:px-6 py-3.5 md:py-4 rounded-2xl font-bold text-sm md:text-base transition-all shadow-lg hover:shadow-xl hover:-translate-y-1 flex justify-center items-center gap-2 md:gap-3 whitespace-nowrap',
-                                    activeLesson.is_completed
-                                        ? 'bg-emerald-500 text-white cursor-default shadow-emerald-200'
-                                        : 'bg-slate-900 text-white hover:bg-slate-800 shadow-slate-300',
+                                    isModuleLocked
+                                        ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 shadow-none cursor-default hover:translate-y-0'
+                                        : activeLesson.is_completed &&
+                                            !isLastLesson &&
+                                            totalInputs === 0
+                                          ? 'bg-white border-2 border-emerald-500 text-emerald-600 shadow-none cursor-default hover:translate-y-0'
+                                          : activeLesson.is_completed &&
+                                              !isLastLesson
+                                            ? 'bg-white border-2 border-emerald-500 text-emerald-600 hover:bg-emerald-50 shadow-emerald-100'
+                                            : 'bg-slate-900 text-white hover:bg-slate-800 shadow-slate-300',
                                 ]"
                             >
                                 <span
-                                    v-if="activeLesson.is_completed"
+                                    v-if="isModuleLocked"
                                     class="flex items-center gap-2"
                                 >
                                     <svg
-                                        class="w-5 h-5 md:w-6 md:h-6"
+                                        class="w-5 h-5"
                                         fill="none"
                                         stroke="currentColor"
                                         viewBox="0 0 24 24"
@@ -761,27 +941,70 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                         <path
                                             stroke-linecap="round"
                                             stroke-linejoin="round"
-                                            stroke-width="3"
+                                            stroke-width="2.5"
                                             d="M5 13l4 4L19 7"
                                         ></path>
                                     </svg>
-                                    Done
+                                    Module Completed
                                 </span>
-                                <span v-else>Mark Complete</span>
-                            </button>
-                            <div class="shrink-0">
-                                <Link
-                                    v-if="lessonNavigation.next"
-                                    :href="
-                                        route('lessons', {
-                                            lesson: lessonNavigation.next.id,
-                                        })
+
+                                <span
+                                    v-else-if="
+                                        isLastLesson &&
+                                        currentModule.progress < 100
                                     "
-                                    class="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center rounded-2xl bg-white border border-slate-200 text-slate-400 hover:text-teal-600 hover:border-teal-200 hover:bg-teal-50 transition-all shadow-sm group"
-                                    title="Next Lesson"
+                                >
+                                    Submit Module
+                                </span>
+
+                                <span
+                                    v-else-if="activeLesson.is_completed"
+                                    class="flex items-center gap-2"
                                 >
                                     <svg
-                                        class="w-6 h-6 transform group-hover:translate-x-1 transition-transform"
+                                        class="w-5 h-5"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="2.5"
+                                            d="M5 13l4 4L19 7"
+                                        ></path>
+                                    </svg>
+                                    {{
+                                        totalInputs > 0
+                                            ? "Update Answers"
+                                            : "Completed"
+                                    }}
+                                </span>
+
+                                <span v-else>
+                                    {{
+                                        isLastLesson
+                                            ? "Submit Module"
+                                            : "Mark Complete"
+                                    }}
+                                </span>
+                            </button>
+
+                            <div class="shrink-0">
+                                <button
+                                    v-if="lessonNavigation.next"
+                                    @click="
+                                        saveAndNavigate(
+                                            route('lessons', {
+                                                lesson: lessonNavigation.next
+                                                    .id,
+                                            }),
+                                        )
+                                    "
+                                    class="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center rounded-2xl bg-white border border-slate-200 text-slate-400 hover:text-teal-600 hover:border-teal-200 hover:bg-teal-50 transition-all shadow-sm"
+                                >
+                                    <svg
+                                        class="w-6 h-6"
                                         fill="none"
                                         stroke="currentColor"
                                         viewBox="0 0 24 24"
@@ -793,7 +1016,7 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
                                             d="M9 5l7 7-7 7"
                                         ></path>
                                     </svg>
-                                </Link>
+                                </button>
                                 <div
                                     v-else
                                     class="w-12 h-12 md:w-14 md:h-14"
@@ -805,122 +1028,277 @@ onUnmounted(() => window.removeEventListener("scroll", updateScrollProgress));
             </template>
         </div>
 
-        <Transition
-            enter-active-class="transition ease-out duration-300"
-            enter-from-class="transform opacity-0 -translate-y-4 scale-90"
-            enter-to-class="transform opacity-100 translate-y-0 scale-100"
-            leave-active-class="transition ease-in duration-200"
-            leave-from-class="transform opacity-100 translate-y-0 scale-100"
-            leave-to-class="transform opacity-0 -translate-y-4 scale-90"
-        >
+        <Teleport to="body">
             <div
-                v-if="showToast"
-                class="fixed top-24 left-1/2 -translate-x-1/2 z-[100] bg-white/95 backdrop-blur-md text-slate-800 px-6 py-4 rounded-full shadow-2xl flex items-center gap-4 max-w-[90vw] md:max-w-md border border-slate-200 ring-4 ring-slate-100/50"
+                v-if="showSummaryModal"
+                class="fixed inset-0 z-[9999] flex items-center justify-center px-4 animate-fade-in"
             >
-                <div class="text-2xl animate-bounce">🎉</div>
-                <div>
-                    <p class="font-bold text-sm md:text-base text-teal-600">
-                        Success!
-                    </p>
-                    <p class="text-sm md:text-base font-medium text-slate-600">
-                        {{ toastMessage }}
-                    </p>
+                <div
+                    class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm"
+                    @click="showSummaryModal = false"
+                ></div>
+                <div
+                    class="bg-white rounded-[2rem] shadow-2xl p-8 max-w-lg w-full relative transform transition-all scale-100 overflow-hidden"
+                >
+                    <div class="text-center mb-6">
+                        <div
+                            class="inline-flex items-center justify-center w-16 h-16 bg-amber-100 text-amber-600 rounded-full mb-4"
+                        >
+                            <svg
+                                class="w-8 h-8"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
+                                ></path>
+                            </svg>
+                        </div>
+                        <h2 class="text-2xl font-extrabold text-slate-900">
+                            Almost There!
+                        </h2>
+                        <p class="text-slate-500 text-sm mt-2">
+                            You've reached the end of
+                            <span class="font-bold text-slate-800">{{
+                                summaryData?.module_title
+                            }}</span
+                            >, but some lessons are incomplete.
+                        </p>
+                    </div>
+                    <div
+                        class="space-y-3 mb-8 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2"
+                    >
+                        <div
+                            v-for="(lessonItem, index) in summaryData?.lessons"
+                            :key="lessonItem.id"
+                            :class="[
+                                'flex items-center justify-between p-4 rounded-xl border transition-all',
+                                lessonItem.is_completed
+                                    ? 'bg-emerald-50/50 border-emerald-100'
+                                    : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm cursor-pointer group',
+                            ]"
+                            @click="
+                                !lessonItem.is_completed &&
+                                router.visit(
+                                    route('lessons', { lesson: lessonItem.id }),
+                                )
+                            "
+                        >
+                            <div
+                                class="flex items-center gap-3 overflow-hidden"
+                            >
+                                <div
+                                    v-if="lessonItem.is_completed"
+                                    class="shrink-0 w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-white text-xs"
+                                >
+                                    <svg
+                                        class="w-3.5 h-3.5"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="3"
+                                            d="M5 13l4 4L19 7"
+                                        ></path>
+                                    </svg>
+                                </div>
+                                <div
+                                    v-else
+                                    class="shrink-0 w-6 h-6 rounded-full border-2 border-slate-300 group-hover:border-indigo-400"
+                                ></div>
+                                <span
+                                    :class="[
+                                        'text-sm font-bold truncate',
+                                        lessonItem.is_completed
+                                            ? 'text-emerald-900 line-through opacity-60'
+                                            : 'text-slate-700',
+                                    ]"
+                                >
+                                    {{ index + 1 }}. {{ lessonItem.title }}
+                                </span>
+                            </div>
+                            <div
+                                v-if="!lessonItem.is_completed"
+                                class="text-slate-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-all"
+                            >
+                                <svg
+                                    class="w-5 h-5"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2"
+                                        d="M9 5l7 7-7 7"
+                                    ></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex flex-col gap-3">
+                        <button
+                            @click="showSummaryModal = false"
+                            class="w-full py-3.5 rounded-xl font-bold bg-slate-900 text-white hover:bg-slate-800 shadow-lg transition-all"
+                        >
+                            I'll Finish Them Now
+                        </button>
+                    </div>
                 </div>
             </div>
-        </Transition>
 
-        <div
-            v-if="showCongratsModal"
-            class="fixed inset-0 z-[100] flex items-center justify-center px-4 animate-fade-in"
-        >
             <div
-                class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm"
-                @click="showCongratsModal = false"
-            ></div>
-            <div
-                class="bg-white rounded-3xl shadow-2xl p-8 md:p-10 max-w-md w-full relative transform transition-all scale-100 text-center"
+                v-if="showCongratsModal"
+                class="fixed inset-0 z-[9999] flex items-center justify-center px-4 animate-fade-in"
             >
-                <button
+                <div
+                    class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm"
                     @click="showCongratsModal = false"
-                    class="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors"
+                ></div>
+                <div
+                    class="bg-white rounded-3xl shadow-2xl p-8 md:p-10 max-w-md w-full relative transform transition-all scale-100 text-center"
                 >
-                    ✕
-                </button>
-                <div class="text-6xl mb-6 animate-bounce">🏆</div>
-                <h2 class="text-3xl font-extrabold text-slate-900 mb-2">
-                    Fantastic Job!
-                </h2>
-                <p class="text-slate-600 text-lg mb-8">
-                    You have officially completed:<br /><span
-                        class="text-teal-600 font-bold"
-                        >{{ completedModuleTitle }}</span
-                    >
-                </p>
-                <div class="flex gap-3">
                     <button
                         @click="showCongratsModal = false"
-                        class="flex-1 py-3.5 rounded-xl font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                        class="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors"
                     >
-                        Stay Here
+                        <svg
+                            class="w-6 h-6"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M6 18L18 6M6 6l12 12"
+                            ></path>
+                        </svg>
                     </button>
-                    <Link
-                        :href="route('lessons')"
-                        class="flex-1 py-3.5 rounded-xl font-bold bg-teal-600 text-white hover:bg-teal-700 shadow-lg hover:shadow-teal-500/30 transition-all"
-                        >Back to Library</Link
+                    <div
+                        class="mx-auto w-20 h-20 bg-yellow-100 text-yellow-600 rounded-full flex items-center justify-center mb-6 animate-bounce"
                     >
+                        <svg
+                            class="w-10 h-10"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                            ></path>
+                        </svg>
+                    </div>
+                    <h2 class="text-3xl font-extrabold text-slate-900 mb-2">
+                        Fantastic Job!
+                    </h2>
+                    <p class="text-slate-600 text-lg mb-8">
+                        You have officially completed:<br /><span
+                            class="text-teal-600 font-bold"
+                            >{{ completedModuleTitle }}</span
+                        >
+                    </p>
+                    <div class="flex gap-3">
+                        <button
+                            @click="showCongratsModal = false"
+                            class="flex-1 py-3.5 rounded-xl font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                        >
+                            Stay Here
+                        </button>
+                        <Link
+                            :href="route('lessons')"
+                            class="flex-1 py-3.5 rounded-xl font-bold bg-teal-600 text-white hover:bg-teal-700 shadow-lg hover:shadow-teal-500/30 transition-all"
+                            >Back to Library</Link
+                        >
+                    </div>
                 </div>
             </div>
-        </div>
+        </Teleport>
+
+        <Teleport to="body">
+            <Transition
+                enter-active-class="transition ease-out duration-300"
+                enter-from-class="transform opacity-0 -translate-y-4 scale-90"
+                enter-to-class="transform opacity-100 translate-y-0 scale-100"
+                leave-active-class="transition ease-in duration-200"
+                leave-from-class="transform opacity-100 translate-y-0 scale-100"
+                leave-to-class="transform opacity-0 -translate-y-4 scale-90"
+            >
+                <div
+                    v-if="showToast"
+                    :class="[
+                        'fixed top-24 left-1/2 -translate-x-1/2 z-[9999] backdrop-blur-md px-6 py-4 rounded-full shadow-2xl flex items-center gap-4 max-w-[90vw] md:max-w-md border ring-4',
+                        toastType === 'error'
+                            ? 'bg-rose-50/95 border-rose-200 ring-rose-100/50 text-rose-800'
+                            : 'bg-white/95 border-slate-200 ring-slate-100/50 text-slate-800',
+                    ]"
+                >
+                    <div
+                        v-if="toastType === 'error'"
+                        class="text-2xl animate-bounce"
+                    >
+                        <svg
+                            class="w-8 h-8"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                            ></path>
+                        </svg>
+                    </div>
+                    <div v-else class="text-2xl animate-bounce">
+                        <svg
+                            class="w-8 h-8"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                stroke-width="2"
+                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                            ></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <p
+                            :class="[
+                                'font-bold text-sm md:text-base',
+                                toastType === 'error'
+                                    ? 'text-rose-600'
+                                    : 'text-teal-600',
+                            ]"
+                        >
+                            {{
+                                toastType === "error"
+                                    ? "Action Required"
+                                    : "Success!"
+                            }}
+                        </p>
+                        <p class="text-sm md:text-base font-medium opacity-90">
+                            {{ toastMessage }}
+                        </p>
+                    </div>
+                </div>
+            </Transition>
+        </Teleport>
     </AuthenticatedLayout>
 </template>
-
-<style>
-.custom-scrollbar::-webkit-scrollbar {
-    width: 4px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-    background-color: #e2e8f0;
-    border-radius: 20px;
-}
-.custom-scrollbar:hover::-webkit-scrollbar-thumb {
-    background-color: #cbd5e1;
-}
-.animate-fade-in {
-    animation: fadeIn 0.3s ease-out forwards;
-}
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-.prose h2 {
-    @apply text-2xl font-bold text-slate-800 mt-10 mb-4 tracking-tight;
-}
-.prose h3 {
-    @apply text-lg font-bold text-slate-700 mt-8 mb-3;
-}
-.prose p {
-    @apply mb-6 leading-relaxed;
-}
-.prose ul {
-    @apply list-none mb-6 space-y-2 pl-0;
-}
-.prose ul li {
-    @apply relative pl-6;
-}
-.prose ul li::before {
-    content: "•";
-    @apply absolute left-0 text-teal-500 font-bold;
-}
-.prose blockquote {
-    @apply border-l-4 border-teal-400 pl-6 italic text-slate-600 my-8 bg-slate-50 py-4 pr-4 rounded-r-xl;
-}
-</style>
